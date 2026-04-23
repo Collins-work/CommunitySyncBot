@@ -76,6 +76,12 @@ python bot.py
 - `/postnow <chat_id>` - admin-only immediate publish of next queued post for target
 - `/reloadschedules` - admin-only force schedule reload from DB
 
+## Chat UX
+
+- In private chat, `/start` shows a cleaner welcome card plus quick-action buttons.
+- In groups, the bot stays command-only so the chat does not get button clutter.
+- Bot commands are scoped so Telegram shows a tailored menu in private chat and group chat.
+
 ## Queueing Posts Exactly As Pasted
 
 1. Send or paste the content to the bot chat (text, image, video, audio, document, sticker, voice, poll).

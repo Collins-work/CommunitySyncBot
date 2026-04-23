@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 from typing import Callable, Coroutine, Any
 from functools import wraps
 
-from telegram import Message, Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeDefault,
+    Message,
+    ReplyKeyboardMarkup,
+    Update,
+)
+from telegram.constants import ChatType, ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config import Settings
@@ -20,6 +30,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 USER_BULK_TARGET_KEY = "bulk_target_chat_id"
+
+PRIVATE_SHORTCUT_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["/whoami", "/chatid"],
+        ["/queuebulk", "/bulkstatus"],
+        ["/postnow", "/reloadschedules"],
+        ["/queuebulkstop", "/start"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=False,
+    selective=True,
+)
+
+
+def html_code(value: object) -> str:
+    return f"<code>{escape(str(value))}</code>"
 
 
 def admin_only(handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, None]]):
@@ -40,8 +66,32 @@ def admin_only(handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message:
         return
+
+    chat = update.effective_chat
+    if chat and chat.type == ChatType.PRIVATE:
+        await update.effective_message.reply_text(
+            "<b>CommunitySyncBot</b>\n"
+            "Ready to queue posts, publish them on schedule, and keep group chats command-only.\n\n"
+            "<b>Quick actions</b>\n"
+            "• /whoami - show your Telegram user ID\n"
+            "• /chatid - show the current chat ID\n"
+            "• /queue &lt;chat_id&gt; - queue the message you replied to\n"
+            "• /queuebulk &lt;chat_id&gt; - enable bulk queue mode\n"
+            "• /postnow &lt;chat_id&gt; - publish the next queued post now\n"
+            "• /reloadschedules - refresh schedule jobs from the database\n\n"
+            "<b>Tip</b>\n"
+            "Use the buttons below in private chat. Group chats stay command-only.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=PRIVATE_SHORTCUT_KEYBOARD,
+            disable_web_page_preview=True,
+        )
+        return
+
     await update.effective_message.reply_text(
-        "Bot is running. Use /whoami for your Telegram ID, /queue <chat_id> as a reply to content you pasted, and /postnow <chat_id> for immediate publish."
+        "<b>CommunitySyncBot</b>\n"
+        "Group mode is command-only. Use /chatid, /queue, /postnow, or /reloadschedules as needed.",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
 
 
@@ -49,7 +99,10 @@ async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user = update.effective_user
     if not user or not update.effective_message:
         return
-    await update.effective_message.reply_text(f"Your Telegram user ID: {user.id}")
+    await update.effective_message.reply_text(
+        f"<b>Your Telegram user ID</b>\n{html_code(user.id)}",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @admin_only
@@ -64,7 +117,10 @@ async def chatid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         reply_info = f"\nReplied message chat ID: {message.reply_to_message.chat.id}"
 
     await message.reply_text(
-        f"Current chat ID: {chat.id}\nChat type: {chat.type}{reply_info}"
+        f"<b>Chat details</b>\n"
+        f"Current chat ID: {html_code(chat.id)}\n"
+        f"Chat type: {html_code(chat.type)}{reply_info}",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -74,21 +130,33 @@ async def postnow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if not context.args:
-        await update.effective_message.reply_text("Usage: /postnow <chat_id>")
+        await update.effective_message.reply_text(
+            "<b>Usage</b>\n/postnow &lt;chat_id&gt;",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     try:
         target_chat_id = int(context.args[0])
     except ValueError:
-        await update.effective_message.reply_text("chat_id must be an integer (channel/group id)")
+        await update.effective_message.reply_text(
+            "<b>Invalid chat ID</b>\nchat_id must be an integer (channel or group id).",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     publisher: PublisherService = context.application.bot_data["publisher"]
     posted = await publisher.publish_next_for_chat(context.application.bot, target_chat_id)
     if posted:
-        await update.effective_message.reply_text(f"Posted next queued message to {target_chat_id}")
+        await update.effective_message.reply_text(
+            f"<b>Published</b>\nPosted the next queued message to {html_code(target_chat_id)}.",
+            parse_mode=ParseMode.HTML,
+        )
     else:
-        await update.effective_message.reply_text(f"No unposted content found for {target_chat_id}")
+        await update.effective_message.reply_text(
+            f"<b>No work to publish</b>\nNo unposted content found for {html_code(target_chat_id)}.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 def detect_message_content_type(message: Message) -> str:
@@ -151,27 +219,42 @@ async def queue_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not context.args:
-        await message.reply_text("Usage: /queue <chat_id> (as a reply to the post you want to queue)")
+        await message.reply_text(
+            "<b>Usage</b>\n/queue &lt;chat_id&gt; as a reply to the post you want to queue.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     try:
         target_chat_id = int(context.args[0])
     except ValueError:
-        await message.reply_text("chat_id must be an integer (channel/group id)")
+        await message.reply_text(
+            "<b>Invalid chat ID</b>\nchat_id must be an integer (channel or group id).",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     source_message = message.reply_to_message
     if not source_message:
-        await message.reply_text("Reply to the exact message/media you want posted, then run /queue <chat_id>.")
+        await message.reply_text(
+            "<b>Queue needs a reply</b>\nReply to the exact message or media you want posted, then run /queue &lt;chat_id&gt;.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     try:
         post_id = await queue_message_for_target(message, source_message, target_chat_id, context)
     except ValueError:
-        await message.reply_text("Unsupported message type. Try text, photo, video, audio, document, sticker, voice, video note, or poll.")
+        await message.reply_text(
+            "<b>Unsupported message type</b>\nTry text, photo, video, audio, document, sticker, voice, video note, or poll.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
-    await message.reply_text(f"Queued post id={post_id} for {target_chat_id}. It will be copied in the exact format during auto-post.")
+    await message.reply_text(
+        f"<b>Queued</b>\nPost {html_code(post_id)} is ready for {html_code(target_chat_id)}. It will be copied in the exact format during auto-post.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @admin_only
@@ -181,18 +264,25 @@ async def queuebulk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if not context.args:
-        await message.reply_text("Usage: /queuebulk <chat_id>")
+        await message.reply_text(
+            "<b>Usage</b>\n/queuebulk &lt;chat_id&gt;",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     try:
         target_chat_id = int(context.args[0])
     except ValueError:
-        await message.reply_text("chat_id must be an integer (channel/group id)")
+        await message.reply_text(
+            "<b>Invalid chat ID</b>\nchat_id must be an integer (channel or group id).",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     context.user_data[USER_BULK_TARGET_KEY] = target_chat_id
     await message.reply_text(
-        f"Bulk queue mode enabled for {target_chat_id}. Send messages/media to this bot and each one will be queued automatically. Use /queuebulkstop to end."
+        f"<b>Bulk queue mode enabled</b>\nTarget chat: {html_code(target_chat_id)}\nSend messages or media to this bot and each one will be queued automatically. Use /queuebulkstop to end.",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -204,10 +294,10 @@ async def queuebulkstop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if USER_BULK_TARGET_KEY in context.user_data:
         context.user_data.pop(USER_BULK_TARGET_KEY, None)
-        await message.reply_text("Bulk queue mode disabled.")
+        await message.reply_text("<b>Bulk queue mode disabled</b>", parse_mode=ParseMode.HTML)
         return
 
-    await message.reply_text("Bulk queue mode was not active.")
+    await message.reply_text("<b>Bulk queue mode was not active</b>", parse_mode=ParseMode.HTML)
 
 
 @admin_only
@@ -218,10 +308,13 @@ async def bulkstatus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     target_chat_id = context.user_data.get(USER_BULK_TARGET_KEY)
     if target_chat_id is None:
-        await message.reply_text("Bulk queue mode is currently OFF.")
+        await message.reply_text("<b>Bulk queue mode</b>\nCurrently OFF.", parse_mode=ParseMode.HTML)
         return
 
-    await message.reply_text(f"Bulk queue mode is ON for target chat {target_chat_id}.")
+    await message.reply_text(
+        f"<b>Bulk queue mode</b>\nCurrently ON for target chat {html_code(target_chat_id)}.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @admin_only
@@ -242,7 +335,10 @@ async def bulk_capture_message(update: Update, context: ContextTypes.DEFAULT_TYP
     except ValueError:
         return
 
-    await message.reply_text(f"Queued in bulk mode as post id={post_id} for {target_chat_id}.")
+    await message.reply_text(
+        f"<b>Queued in bulk mode</b>\nPost {html_code(post_id)} is ready for {html_code(target_chat_id)}.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @admin_only
@@ -252,7 +348,10 @@ async def reloadschedules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     schedule_manager: ScheduleManager = context.application.bot_data["schedule_manager"]
     schedule_manager.reload_jobs()
-    await update.effective_message.reply_text("Schedules reloaded from database.")
+    await update.effective_message.reply_text(
+        "<b>Schedules reloaded</b>\nThe scheduler jobs were refreshed from the database.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 def main() -> None:
@@ -269,6 +368,43 @@ def main() -> None:
         app.bot_data["repo"] = repo
         app.bot_data["publisher"] = publisher
         app.bot_data["schedule_manager"] = schedule_manager
+        await app.bot.set_my_commands(
+            [
+                BotCommand("start", "Show quick actions"),
+                BotCommand("whoami", "Show your Telegram user ID"),
+                BotCommand("chatid", "Show the current chat ID"),
+                BotCommand("queue", "Queue a replied message"),
+                BotCommand("queuebulk", "Enable bulk queue mode"),
+                BotCommand("queuebulkstop", "Disable bulk queue mode"),
+                BotCommand("bulkstatus", "Show bulk queue status"),
+                BotCommand("postnow", "Publish next queued post"),
+                BotCommand("reloadschedules", "Reload schedules from DB"),
+            ],
+            scope=BotCommandScopeDefault(),
+        )
+        await app.bot.set_my_commands(
+            [
+                BotCommand("start", "Show quick actions"),
+                BotCommand("whoami", "Show your Telegram user ID"),
+                BotCommand("chatid", "Show the current chat ID"),
+                BotCommand("queue", "Queue a replied message"),
+                BotCommand("queuebulk", "Enable bulk queue mode"),
+                BotCommand("queuebulkstop", "Disable bulk queue mode"),
+                BotCommand("bulkstatus", "Show bulk queue status"),
+                BotCommand("postnow", "Publish next queued post"),
+                BotCommand("reloadschedules", "Reload schedules from DB"),
+            ],
+            scope=BotCommandScopeAllPrivateChats(),
+        )
+        await app.bot.set_my_commands(
+            [
+                BotCommand("chatid", "Show the current chat ID"),
+                BotCommand("queue", "Queue a replied message"),
+                BotCommand("postnow", "Publish next queued post"),
+                BotCommand("reloadschedules", "Reload schedules from DB"),
+            ],
+            scope=BotCommandScopeAllGroupChats(),
+        )
         schedule_manager.start()
 
     async def post_shutdown(app: Application) -> None:
