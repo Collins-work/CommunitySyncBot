@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any, Dict
 
-from telegram import Bot
+from telegram import Bot, Message
 
 from db import PostRepository
 
@@ -25,8 +25,14 @@ class PublisherService:
         post_id = int(post["id"])
 
         try:
-            await self._send_post(bot, target_chat_id, post)
-            self.repo.mark_posted(post_id)
+            sent_message = await self._send_post(bot, target_chat_id, post)
+            initial_views = int(getattr(sent_message, "views", 0) or 0)
+            self.repo.mark_posted(
+                post_id,
+                posted_chat_id=int(sent_message.chat.id),
+                posted_message_id=int(sent_message.message_id),
+                view_count=initial_views,
+            )
             logger.info("Posted id=%s to chat_id=%s", post_id, target_chat_id)
             return True
         except Exception:
@@ -34,83 +40,73 @@ class PublisherService:
             logger.exception("Failed posting id=%s to chat_id=%s", post_id, target_chat_id)
             raise
 
-    async def _send_post(self, bot: Bot, target_chat_id: int, post: Dict[str, Any]) -> None:
+    async def _send_post(self, bot: Bot, target_chat_id: int, post: Dict[str, Any]) -> Message:
         source_chat_id = post.get("source_chat_id")
         source_message_id = post.get("source_message_id")
         if source_chat_id and source_message_id:
-            await bot.copy_message(
+            return await bot.copy_message(
                 chat_id=target_chat_id,
                 from_chat_id=int(source_chat_id),
                 message_id=int(source_message_id),
             )
-            return
 
         content_type = (post.get("content_type") or "text").lower()
 
         if content_type == "text":
-            await bot.send_message(chat_id=target_chat_id, text=post["content"])
-            return
+            return await bot.send_message(chat_id=target_chat_id, text=post["content"])
 
         if content_type == "image":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("image post requires media_url")
             caption = post.get("caption") or post.get("content")
-            await bot.send_photo(chat_id=target_chat_id, photo=media_url, caption=caption)
-            return
+            return await bot.send_photo(chat_id=target_chat_id, photo=media_url, caption=caption)
 
         if content_type == "video":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("video post requires media_url")
             caption = post.get("caption") or post.get("content")
-            await bot.send_video(chat_id=target_chat_id, video=media_url, caption=caption)
-            return
+            return await bot.send_video(chat_id=target_chat_id, video=media_url, caption=caption)
 
         if content_type == "audio":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("audio post requires media_url")
             caption = post.get("caption") or post.get("content")
-            await bot.send_audio(chat_id=target_chat_id, audio=media_url, caption=caption)
-            return
+            return await bot.send_audio(chat_id=target_chat_id, audio=media_url, caption=caption)
 
         if content_type == "document":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("document post requires media_url")
             caption = post.get("caption") or post.get("content")
-            await bot.send_document(chat_id=target_chat_id, document=media_url, caption=caption)
-            return
+            return await bot.send_document(chat_id=target_chat_id, document=media_url, caption=caption)
 
         if content_type == "animation":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("animation post requires media_url")
             caption = post.get("caption") or post.get("content")
-            await bot.send_animation(chat_id=target_chat_id, animation=media_url, caption=caption)
-            return
+            return await bot.send_animation(chat_id=target_chat_id, animation=media_url, caption=caption)
 
         if content_type == "voice":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("voice post requires media_url")
-            await bot.send_voice(chat_id=target_chat_id, voice=media_url, caption=post.get("caption"))
-            return
+            return await bot.send_voice(chat_id=target_chat_id, voice=media_url, caption=post.get("caption"))
 
         if content_type == "video_note":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("video_note post requires media_url")
-            await bot.send_video_note(chat_id=target_chat_id, video_note=media_url)
-            return
+            return await bot.send_video_note(chat_id=target_chat_id, video_note=media_url)
 
         if content_type == "sticker":
             media_url = post.get("media_url")
             if not media_url:
                 raise ValueError("sticker post requires media_url")
-            await bot.send_sticker(chat_id=target_chat_id, sticker=media_url)
-            return
+            return await bot.send_sticker(chat_id=target_chat_id, sticker=media_url)
 
         if content_type == "poll":
             question = post.get("poll_question") or post.get("content")
@@ -123,7 +119,6 @@ class PublisherService:
             if not question or not options or not isinstance(options, list):
                 raise ValueError("poll post requires poll_question/content and poll_options array")
 
-            await bot.send_poll(chat_id=target_chat_id, question=question, options=options)
-            return
+            return await bot.send_poll(chat_id=target_chat_id, question=question, options=options)
 
         raise ValueError(f"Unsupported content_type: {content_type}")

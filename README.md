@@ -12,6 +12,7 @@ Python Telegram bot that auto-publishes queued posts to multiple channels and gr
 - Admin-only bot commands via your Telegram user ID (`ADMIN_TELEGRAM_IDS`)
 - Exact-format posting flow: queue pasted/replied Telegram messages and publish with `copy_message`
 - Rich content support: text, image, video, audio, document, animation, voice, sticker, poll
+- Engagement analytics: track posted-log views and reactions to measure post performance
 
 ## Project Files
 
@@ -74,6 +75,7 @@ python bot.py
 - `/queuebulkstop` - admin-only, stop bulk queue mode
 - `/bulkstatus` - admin-only, show whether bulk queue mode is active
 - `/postnow <chat_id>` - admin-only immediate publish of next queued post for target
+- `/analytics <chat_id> [limit]` - admin-only top engagement report (views, reactions, score)
 - `/setschedule <chat_id> <minute> <hour> <day-of-month> <month> <day-of-week> [timezone]` - admin-only set a per-chat schedule
 - `/listschedules` - admin-only list configured schedules
 - `/reloadschedules` - admin-only force schedule reload from DB
@@ -119,6 +121,14 @@ Use this when you want to paste many posts quickly:
 3. Bot copies and sends the original queued Telegram message to the target.
 4. If successful, row is updated to `posted=true`.
 5. If failed, claim is released (`in_progress=false`) so it can retry later.
+
+## Engagement Tracking (Views + Reactions)
+
+- When a post is published, the bot stores the destination message metadata.
+- Incoming Telegram engagement updates are mapped back to that post.
+- The bot records view snapshots and reaction updates in `post_engagement_logs`.
+- Aggregated counters are stored on `posts` (`view_count`, `reaction_count`, `last_engagement_at`).
+- Use `/analytics <chat_id> [limit]` to see top-performing published logs.
 
 ## Multi-Channel and Group Support
 

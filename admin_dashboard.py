@@ -28,6 +28,8 @@ def main() -> None:
     print(f"Posted: {stats.get('posted_posts', 0)}")
     print(f"In progress: {stats.get('in_progress_posts', 0)}")
     print(f"Targets: {stats.get('target_count', 0)}")
+    print(f"Total views: {stats.get('total_views', 0)}")
+    print(f"Total reactions: {stats.get('total_reactions', 0)}")
     print(f"Active schedules: {schedules.get('active_schedules', 0)}")
     print(f"Total schedules: {schedules.get('total_schedules', 0)}")
     print("")
@@ -48,6 +50,8 @@ def main() -> None:
             f"type={row.get('content_type')} "
             f"posted={fmt_bool(row.get('posted'))} "
             f"in_progress={fmt_bool(row.get('in_progress'))} "
+            f"views={row.get('view_count', 0)} "
+            f"reactions={row.get('reaction_count', 0)} "
             f"created_at={row.get('created_at')} "
             f"posted_at={row.get('posted_at')} "
             f"preview=\"{preview}\""

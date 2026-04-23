@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from html import escape
-from typing import Callable, Coroutine, Any
+from typing import Callable, Coroutine, Any, List
 from functools import wraps
 
 from telegram import (
@@ -16,7 +16,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatType, ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, TypeHandler, filters
 
 from config import Settings
 from db import PostRepository
@@ -77,6 +77,7 @@ async def send_start_panel(message: Message, private_chat: bool = False) -> None
             "• /queue &lt;chat_id&gt; - queue the message you replied to\n"
             "• /queuebulk &lt;chat_id&gt; - enable bulk queue mode\n"
             "• /postnow &lt;chat_id&gt; - publish the next queued post now\n"
+            "• /analytics &lt;chat_id&gt; - show top-performing posted logs\n"
             "• /reloadschedules - refresh schedule jobs from the database\n\n"
             "<b>Tip</b>\n"
             "Use the buttons below for one-tap actions. Group chats stay command-only.",
@@ -500,6 +501,144 @@ async def listschedules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+def _encode_reactions(items: Any) -> List[str]:
+    encoded: List[str] = []
+    for item in items or []:
+        emoji = getattr(item, "emoji", None)
+        if emoji:
+            encoded.append(str(emoji))
+            continue
+
+        custom_emoji_id = getattr(item, "custom_emoji_id", None)
+        if custom_emoji_id:
+            encoded.append(f"custom:{custom_emoji_id}")
+            continue
+
+        encoded.append(str(item))
+    return encoded
+
+
+async def track_engagement_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    repo: PostRepository = context.application.bot_data["repo"]
+
+    reaction_count_update = getattr(update, "message_reaction_count", None)
+    if reaction_count_update:
+        chat = getattr(reaction_count_update, "chat", None)
+        message_id = getattr(reaction_count_update, "message_id", None)
+        if chat and message_id:
+            reactions = getattr(reaction_count_update, "reactions", []) or []
+            total_reactions = 0
+            reaction_breakdown: List[dict] = []
+            for reaction in reactions:
+                count = int(getattr(reaction, "total_count", 0) or 0)
+                total_reactions += count
+                reaction_breakdown.append(
+                    {
+                        "reaction": str(getattr(reaction, "type", "unknown")),
+                        "count": count,
+                    }
+                )
+
+            repo.upsert_reaction_snapshot(
+                posted_chat_id=int(chat.id),
+                posted_message_id=int(message_id),
+                reaction_count=total_reactions,
+                payload={"source_update": "message_reaction_count", "breakdown": reaction_breakdown},
+            )
+        return
+
+    reaction_update = getattr(update, "message_reaction", None)
+    if reaction_update:
+        chat = getattr(reaction_update, "chat", None)
+        message_id = getattr(reaction_update, "message_id", None)
+        if chat and message_id:
+            old_reactions = getattr(reaction_update, "old_reaction", []) or []
+            new_reactions = getattr(reaction_update, "new_reaction", []) or []
+            delta = len(new_reactions) - len(old_reactions)
+            if delta != 0:
+                actor = getattr(reaction_update, "user", None)
+                repo.apply_reaction_delta(
+                    posted_chat_id=int(chat.id),
+                    posted_message_id=int(message_id),
+                    delta=delta,
+                    actor_id=(int(actor.id) if actor else None),
+                    payload={
+                        "source_update": "message_reaction",
+                        "old": _encode_reactions(old_reactions),
+                        "new": _encode_reactions(new_reactions),
+                    },
+                )
+        return
+
+    for source_update in ("channel_post", "edited_channel_post"):
+        channel_message = getattr(update, source_update, None)
+        if not channel_message:
+            continue
+        views = getattr(channel_message, "views", None)
+        if views is None:
+            continue
+        repo.upsert_view_snapshot(
+            posted_chat_id=int(channel_message.chat.id),
+            posted_message_id=int(channel_message.message_id),
+            view_count=int(views),
+            payload={"source_update": source_update},
+        )
+
+
+@admin_only
+async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    if not context.args:
+        await message.reply_text(
+            "<b>Usage</b>\n/analytics &lt;chat_id&gt; [limit]",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_chat_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("<b>Invalid chat ID</b>", parse_mode=ParseMode.HTML)
+        return
+
+    limit = 10
+    if len(context.args) > 1:
+        try:
+            limit = max(1, min(int(context.args[1]), 30))
+        except ValueError:
+            await message.reply_text("<b>Invalid limit</b>\nUse an integer between 1 and 30.", parse_mode=ParseMode.HTML)
+            return
+
+    repo: PostRepository = context.application.bot_data["repo"]
+    rows = repo.fetch_engagement_summary(target_chat_id, limit=limit)
+
+    if not rows:
+        await message.reply_text(
+            f"<b>No analytics yet</b>\nNo posted logs found for {html_code(target_chat_id)}.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    lines = [f"<b>Top engagement for {html_code(target_chat_id)}</b>"]
+    for row in rows:
+        preview = escape((row.get("preview") or "").replace("\n", " ").strip())
+        if len(preview) > 70:
+            preview = preview[:67] + "..."
+        lines.append(
+            f"#{html_code(row.get('id'))} msg={html_code(row.get('posted_message_id'))} "
+            f"views={html_code(row.get('view_count', 0))} "
+            f"reactions={html_code(row.get('reaction_count', 0))} "
+            f"score={html_code(row.get('engagement_score', 0))}"
+        )
+        if preview:
+            lines.append(f"{preview}")
+
+    await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
 def main() -> None:
     settings = Settings.from_env()
 
@@ -524,6 +663,7 @@ def main() -> None:
                 BotCommand("queuebulkstop", "Disable bulk queue mode"),
                 BotCommand("bulkstatus", "Show bulk queue status"),
                 BotCommand("postnow", "Publish next queued post"),
+                BotCommand("analytics", "Show engagement analytics"),
                 BotCommand("setschedule", "Set a posting schedule for a chat"),
                 BotCommand("listschedules", "List configured schedules"),
                 BotCommand("reloadschedules", "Reload schedules from DB"),
@@ -540,6 +680,7 @@ def main() -> None:
                 BotCommand("queuebulkstop", "Disable bulk queue mode"),
                 BotCommand("bulkstatus", "Show bulk queue status"),
                 BotCommand("postnow", "Publish next queued post"),
+                BotCommand("analytics", "Show engagement analytics"),
                 BotCommand("setschedule", "Set a posting schedule for a chat"),
                 BotCommand("listschedules", "List configured schedules"),
                 BotCommand("reloadschedules", "Reload schedules from DB"),
@@ -551,6 +692,7 @@ def main() -> None:
                 BotCommand("chatid", "Show the current chat ID"),
                 BotCommand("queue", "Queue a replied message"),
                 BotCommand("postnow", "Publish next queued post"),
+                BotCommand("analytics", "Show engagement analytics"),
                 BotCommand("setschedule", "Set a posting schedule for a chat"),
                 BotCommand("listschedules", "List configured schedules"),
                 BotCommand("reloadschedules", "Reload schedules from DB"),
@@ -581,11 +723,13 @@ def main() -> None:
     application.add_handler(CommandHandler("queuebulkstop", queuebulkstop_cmd))
     application.add_handler(CommandHandler("bulkstatus", bulkstatus_cmd))
     application.add_handler(CommandHandler("postnow", postnow_cmd))
+    application.add_handler(CommandHandler("analytics", analytics_cmd))
     application.add_handler(CommandHandler("setschedule", setschedule_cmd))
     application.add_handler(CommandHandler("listschedules", listschedules_cmd))
     application.add_handler(CommandHandler("reloadschedules", reloadschedules_cmd))
     application.add_handler(CallbackQueryHandler(quick_action_callback, pattern=r"^quick:"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, bulk_capture_message))
+    application.add_handler(TypeHandler(Update, track_engagement_updates), group=1)
 
     logger.info("Starting bot polling")
     application.run_polling(drop_pending_updates=True)
