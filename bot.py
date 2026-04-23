@@ -7,15 +7,16 @@ from functools import wraps
 
 from telegram import (
     BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeDefault,
     Message,
-    ReplyKeyboardMarkup,
     Update,
 )
 from telegram.constants import ChatType, ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config import Settings
 from db import PostRepository
@@ -31,21 +32,54 @@ logger = logging.getLogger(__name__)
 
 USER_BULK_TARGET_KEY = "bulk_target_chat_id"
 
-PRIVATE_SHORTCUT_KEYBOARD = ReplyKeyboardMarkup(
+PRIVATE_SHORTCUT_KEYBOARD = InlineKeyboardMarkup(
     [
-        ["/whoami", "/chatid"],
-        ["/queuebulk", "/bulkstatus"],
-        ["/postnow", "/reloadschedules"],
-        ["/queuebulkstop", "/start"],
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False,
-    selective=True,
+        [
+            InlineKeyboardButton("Who am I", callback_data="quick:whoami"),
+            InlineKeyboardButton("Chat ID", callback_data="quick:chatid"),
+        ],
+        [
+            InlineKeyboardButton("Bulk status", callback_data="quick:bulkstatus"),
+            InlineKeyboardButton("Stop bulk", callback_data="quick:queuebulkstop"),
+        ],
+        [
+            InlineKeyboardButton("Reload schedules", callback_data="quick:reloadschedules"),
+            InlineKeyboardButton("Refresh panel", callback_data="quick:start"),
+        ],
+    ]
 )
 
 
 def html_code(value: object) -> str:
     return f"<code>{escape(str(value))}</code>"
+
+
+async def send_start_panel(message: Message, private_chat: bool = False) -> None:
+    if private_chat:
+        await message.reply_text(
+            "<b>CommunitySyncBot</b>\n"
+            "Ready to queue posts, publish them on schedule, and keep group chats command-only.\n\n"
+            "<b>Quick actions</b>\n"
+            "• /whoami - show your Telegram user ID\n"
+            "• /chatid - show the current chat ID\n"
+            "• /queue &lt;chat_id&gt; - queue the message you replied to\n"
+            "• /queuebulk &lt;chat_id&gt; - enable bulk queue mode\n"
+            "• /postnow &lt;chat_id&gt; - publish the next queued post now\n"
+            "• /reloadschedules - refresh schedule jobs from the database\n\n"
+            "<b>Tip</b>\n"
+            "Use the buttons below for one-tap actions. Group chats stay command-only.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=PRIVATE_SHORTCUT_KEYBOARD,
+            disable_web_page_preview=True,
+        )
+        return
+
+    await message.reply_text(
+        "<b>CommunitySyncBot</b>\n"
+        "Group mode is command-only. Use /chatid, /queue, /postnow, or /reloadschedules as needed.",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 def admin_only(handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, None]]):
@@ -66,33 +100,70 @@ def admin_only(handler: Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message:
         return
-
     chat = update.effective_chat
-    if chat and chat.type == ChatType.PRIVATE:
-        await update.effective_message.reply_text(
-            "<b>CommunitySyncBot</b>\n"
-            "Ready to queue posts, publish them on schedule, and keep group chats command-only.\n\n"
-            "<b>Quick actions</b>\n"
-            "• /whoami - show your Telegram user ID\n"
-            "• /chatid - show the current chat ID\n"
-            "• /queue &lt;chat_id&gt; - queue the message you replied to\n"
-            "• /queuebulk &lt;chat_id&gt; - enable bulk queue mode\n"
-            "• /postnow &lt;chat_id&gt; - publish the next queued post now\n"
-            "• /reloadschedules - refresh schedule jobs from the database\n\n"
-            "<b>Tip</b>\n"
-            "Use the buttons below in private chat. Group chats stay command-only.",
+    await send_start_panel(update.effective_message, private_chat=bool(chat and chat.type == ChatType.PRIVATE))
+
+
+async def quick_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.message:
+        return
+
+    await query.answer()
+    action = (query.data or "").removeprefix("quick:")
+    message = query.message
+
+    if action == "start":
+        await send_start_panel(message, private_chat=True)
+        return
+
+    if action == "whoami":
+        user = query.from_user
+        if not user:
+            return
+        await message.reply_text(
+            f"<b>Your Telegram user ID</b>\n{html_code(user.id)}",
             parse_mode=ParseMode.HTML,
-            reply_markup=PRIVATE_SHORTCUT_KEYBOARD,
-            disable_web_page_preview=True,
         )
         return
 
-    await update.effective_message.reply_text(
-        "<b>CommunitySyncBot</b>\n"
-        "Group mode is command-only. Use /chatid, /queue, /postnow, or /reloadschedules as needed.",
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+    if action == "chatid":
+        chat = message.chat
+        await message.reply_text(
+            f"<b>Chat details</b>\nCurrent chat ID: {html_code(chat.id)}\nChat type: {html_code(chat.type)}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if action == "bulkstatus":
+        target_chat_id = context.user_data.get(USER_BULK_TARGET_KEY)
+        if target_chat_id is None:
+            await message.reply_text("<b>Bulk queue mode</b>\nCurrently OFF.", parse_mode=ParseMode.HTML)
+            return
+        await message.reply_text(
+            f"<b>Bulk queue mode</b>\nCurrently ON for target chat {html_code(target_chat_id)}.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if action == "queuebulkstop":
+        if USER_BULK_TARGET_KEY in context.user_data:
+            context.user_data.pop(USER_BULK_TARGET_KEY, None)
+            await message.reply_text("<b>Bulk queue mode disabled</b>", parse_mode=ParseMode.HTML)
+            return
+        await message.reply_text("<b>Bulk queue mode was not active</b>", parse_mode=ParseMode.HTML)
+        return
+
+    if action == "reloadschedules":
+        schedule_manager: ScheduleManager = context.application.bot_data["schedule_manager"]
+        schedule_manager.reload_jobs()
+        await message.reply_text(
+            "<b>Schedules reloaded</b>\nThe scheduler jobs were refreshed from the database.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    await message.reply_text("<b>Unknown quick action</b>", parse_mode=ParseMode.HTML)
 
 
 async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -430,6 +501,7 @@ def main() -> None:
     application.add_handler(CommandHandler("bulkstatus", bulkstatus_cmd))
     application.add_handler(CommandHandler("postnow", postnow_cmd))
     application.add_handler(CommandHandler("reloadschedules", reloadschedules_cmd))
+    application.add_handler(CallbackQueryHandler(quick_action_callback, pattern=r"^quick:"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, bulk_capture_message))
 
     logger.info("Starting bot polling")

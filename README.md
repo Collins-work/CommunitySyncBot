@@ -78,7 +78,7 @@ python bot.py
 
 ## Chat UX
 
-- In private chat, `/start` shows a cleaner welcome card plus quick-action buttons.
+- In private chat, `/start` shows a cleaner welcome card with command shortcuts.
 - In groups, the bot stays command-only so the chat does not get button clutter.
 - Bot commands are scoped so Telegram shows a tailored menu in private chat and group chat.
 
