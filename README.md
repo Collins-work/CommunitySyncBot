@@ -74,6 +74,8 @@ python bot.py
 - `/queuebulkstop` - admin-only, stop bulk queue mode
 - `/bulkstatus` - admin-only, show whether bulk queue mode is active
 - `/postnow <chat_id>` - admin-only immediate publish of next queued post for target
+- `/setschedule <chat_id> <minute> <hour> <day-of-month> <month> <day-of-week> [timezone]` - admin-only set a per-chat schedule
+- `/listschedules` - admin-only list configured schedules
 - `/reloadschedules` - admin-only force schedule reload from DB
 
 ## Chat UX
@@ -81,6 +83,7 @@ python bot.py
 - In private chat, `/start` shows a cleaner welcome card with command shortcuts.
 - In groups, the bot stays command-only so the chat does not get button clutter.
 - Bot commands are scoped so Telegram shows a tailored menu in private chat and group chat.
+- Schedules are per chat, so different channels or groups can have different posting times.
 
 ## Queueing Posts Exactly As Pasted
 
@@ -88,6 +91,18 @@ python bot.py
 2. Reply to that message with `/queue <chat_id>`.
 3. Bot stores the source message reference in PostgreSQL.
 4. On schedule (or `/postnow`), bot uses Telegram `copy_message` to publish in the same format.
+
+## Setting Per-Chat Schedules
+
+Use `/setschedule` to define a cron-based posting time for a specific channel or group:
+
+```text
+/setschedule -1001234567890 0 9 * * 1-5 Europe/London
+```
+
+That example posts to the target chat at 9:00 AM Monday through Friday in `Europe/London`.
+
+Use `/listschedules` to verify the configured timing for each chat.
 
 ## Bulk Queue Mode
 

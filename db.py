@@ -13,6 +13,7 @@ class ScheduleRow:
     target_chat_id: int
     cron_expr: str
     timezone: str
+    active: bool = True
 
 
 class PostRepository:
@@ -162,7 +163,7 @@ class PostRepository:
 
     def fetch_active_schedules(self, default_timezone: str) -> List[ScheduleRow]:
         sql = """
-        SELECT id, target_chat_id, cron_expr, timezone
+        SELECT id, target_chat_id, cron_expr, timezone, active
         FROM channel_schedules
         WHERE active = TRUE
         ORDER BY id;
@@ -179,6 +180,64 @@ class PostRepository:
                     target_chat_id=row["target_chat_id"],
                     cron_expr=row["cron_expr"],
                     timezone=(row["timezone"] or default_timezone),
+                    active=row["active"],
+                )
+            )
+        return schedules
+
+    def upsert_schedule(self, target_chat_id: int, cron_expr: str, timezone: str, active: bool = True) -> int:
+        sql = """
+        INSERT INTO channel_schedules (
+            target_chat_id,
+            cron_expr,
+            timezone,
+            active
+        )
+        VALUES (
+            %(target_chat_id)s,
+            %(cron_expr)s,
+            %(timezone)s,
+            %(active)s
+        )
+        ON CONFLICT (target_chat_id, cron_expr, timezone)
+        DO UPDATE SET active = EXCLUDED.active
+        RETURNING id;
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql,
+                    {
+                        "target_chat_id": target_chat_id,
+                        "cron_expr": cron_expr,
+                        "timezone": timezone,
+                        "active": active,
+                    },
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return int(row["id"])
+
+    def fetch_all_schedules(self, default_timezone: str) -> List[ScheduleRow]:
+        sql = """
+        SELECT id, target_chat_id, cron_expr, timezone, active
+        FROM channel_schedules
+        ORDER BY id;
+        """
+        with self.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+
+        schedules: List[ScheduleRow] = []
+        for row in rows:
+            schedules.append(
+                ScheduleRow(
+                    id=row["id"],
+                    target_chat_id=row["target_chat_id"],
+                    cron_expr=row["cron_expr"],
+                    timezone=(row["timezone"] or default_timezone),
+                    active=row["active"],
                 )
             )
         return schedules

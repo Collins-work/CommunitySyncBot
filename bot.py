@@ -54,6 +54,18 @@ def html_code(value: object) -> str:
     return f"<code>{escape(str(value))}</code>"
 
 
+def format_schedule_row(row: object) -> str:
+    active = getattr(row, "active", True)
+    status = "ON" if active else "OFF"
+    return (
+        f"ID {html_code(getattr(row, 'id', '?'))} | "
+        f"chat {html_code(getattr(row, 'target_chat_id', '?'))} | "
+        f"cron {html_code(getattr(row, 'cron_expr', '?'))} | "
+        f"tz {html_code(getattr(row, 'timezone', '?'))} | "
+        f"{html_code(status)}"
+    )
+
+
 async def send_start_panel(message: Message, private_chat: bool = False) -> None:
     if private_chat:
         await message.reply_text(
@@ -425,6 +437,69 @@ async def reloadschedules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 
+@admin_only
+async def setschedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    if len(context.args) < 6:
+        await message.reply_text(
+            "<b>Usage</b>\n"
+            "/setschedule &lt;chat_id&gt; &lt;minute&gt; &lt;hour&gt; &lt;day-of-month&gt; &lt;month&gt; &lt;day-of-week&gt; [timezone]\n\n"
+            "<b>Example</b>\n"
+            "/setschedule -1001234567890 0 9 * * 1-5 Europe/London",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        target_chat_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("<b>Invalid chat ID</b>", parse_mode=ParseMode.HTML)
+        return
+
+    minute, hour, day_of_month, month, day_of_week = context.args[1:6]
+    timezone = context.args[6] if len(context.args) > 6 else context.application.bot_data["settings"].default_timezone
+    cron_expr = f"{minute} {hour} {day_of_month} {month} {day_of_week}"
+
+    repo: PostRepository = context.application.bot_data["repo"]
+    schedule_id = repo.upsert_schedule(target_chat_id, cron_expr, timezone, active=True)
+
+    schedule_manager: ScheduleManager = context.application.bot_data["schedule_manager"]
+    schedule_manager.reload_jobs()
+
+    await message.reply_text(
+        f"<b>Schedule saved</b>\n"
+        f"Schedule ID: {html_code(schedule_id)}\n"
+        f"Chat: {html_code(target_chat_id)}\n"
+        f"Cron: {html_code(cron_expr)}\n"
+        f"Timezone: {html_code(timezone)}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@admin_only
+async def listschedules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    repo: PostRepository = context.application.bot_data["repo"]
+    settings: Settings = context.application.bot_data["settings"]
+    schedules = repo.fetch_all_schedules(settings.default_timezone)
+
+    if not schedules:
+        await message.reply_text("<b>No schedules found</b>", parse_mode=ParseMode.HTML)
+        return
+
+    lines = ["<b>Schedules</b>"]
+    for row in schedules:
+        lines.append(format_schedule_row(row))
+
+    await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
 def main() -> None:
     settings = Settings.from_env()
 
@@ -449,6 +524,8 @@ def main() -> None:
                 BotCommand("queuebulkstop", "Disable bulk queue mode"),
                 BotCommand("bulkstatus", "Show bulk queue status"),
                 BotCommand("postnow", "Publish next queued post"),
+                BotCommand("setschedule", "Set a posting schedule for a chat"),
+                BotCommand("listschedules", "List configured schedules"),
                 BotCommand("reloadschedules", "Reload schedules from DB"),
             ],
             scope=BotCommandScopeDefault(),
@@ -463,6 +540,8 @@ def main() -> None:
                 BotCommand("queuebulkstop", "Disable bulk queue mode"),
                 BotCommand("bulkstatus", "Show bulk queue status"),
                 BotCommand("postnow", "Publish next queued post"),
+                BotCommand("setschedule", "Set a posting schedule for a chat"),
+                BotCommand("listschedules", "List configured schedules"),
                 BotCommand("reloadschedules", "Reload schedules from DB"),
             ],
             scope=BotCommandScopeAllPrivateChats(),
@@ -472,6 +551,8 @@ def main() -> None:
                 BotCommand("chatid", "Show the current chat ID"),
                 BotCommand("queue", "Queue a replied message"),
                 BotCommand("postnow", "Publish next queued post"),
+                BotCommand("setschedule", "Set a posting schedule for a chat"),
+                BotCommand("listschedules", "List configured schedules"),
                 BotCommand("reloadschedules", "Reload schedules from DB"),
             ],
             scope=BotCommandScopeAllGroupChats(),
@@ -500,6 +581,8 @@ def main() -> None:
     application.add_handler(CommandHandler("queuebulkstop", queuebulkstop_cmd))
     application.add_handler(CommandHandler("bulkstatus", bulkstatus_cmd))
     application.add_handler(CommandHandler("postnow", postnow_cmd))
+    application.add_handler(CommandHandler("setschedule", setschedule_cmd))
+    application.add_handler(CommandHandler("listschedules", listschedules_cmd))
     application.add_handler(CommandHandler("reloadschedules", reloadschedules_cmd))
     application.add_handler(CallbackQueryHandler(quick_action_callback, pattern=r"^quick:"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, bulk_capture_message))
